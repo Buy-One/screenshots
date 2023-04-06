@@ -315,7 +315,7 @@ ENABLE_SCRIPT = ""
 function Script_Not_Enabled(ENABLE_SCRIPT)
 	if #ENABLE_SCRIPT:gsub(' ','') == 0 then
 	local emoji = [[
-		_(ツ)_
+		_(гѓ„)_
 		\_/|\_/
 	]]
 	r.MB('  Please enable the script in its USER SETTINGS.\n\nSelect it in the Action list and click "Edit action...".\n\n'..emoji, 'PROMPT', 0)
@@ -672,6 +672,14 @@ local t = {} -- will contain the bits
 return t
 end
 
+
+function gener_numer_seq(start, fin)
+local t = {}
+	for i = start, fin do
+	t[#t+1] = i
+	end
+return t
+end
 
 --================================ M A T H  E N D ===================================
 
@@ -1053,12 +1061,30 @@ end
 function reverse_indexed_table2(t)
 	if not t then return end
 local fin = #t -- separate var because using #t in the loop won't work due to the table length increase
-  for i = fin,1,-1 do
-  t[#t+1] = t[i] -- append all values starting from the last to the end of current table
-  end  
-  for i = 1, fin do
-  table.remove(t,1) -- remove 1st field as many times as the length of the orig table, with each removal next field becomes 1st
-  end
+	for i = fin,1,-1 do
+	t[#t+1] = t[i] -- append all values starting from the last to the end of current table
+	end  
+	for i = 1, fin do
+	table.remove(t,1) -- remove 1st field as many times as the length of the orig table, with each removal next field becomes 1st
+	end
+end
+
+
+function reverse_indexed_table3(t)
+	for i = #t,1,-1 do
+	t[#t+1] = t[i]
+	table.remove(t,i)
+	end
+end
+
+
+function reverse_indexed_table4(t)
+	for k, v in ipairs(t) do
+		if k > #t/2 then break end -- only run half the table length (rounded down half if the length is an odd number), otherwise the order will be restored
+	local i = k-1
+	t[k] = t[#t-i]
+	t[#t-i] = v
+	end
 end
 
 
@@ -1162,6 +1188,119 @@ function unpack(t, from, to)
 -- if both are nil, then all
 return table.unpack(t, from, to)
 end
+
+
+function shuffle_array(t, places, backward) -- places integer, backward boolean
+-- number of places backward = #t - places forward and vice versa, the results will be identical
+	if places == #t then return end -- because the order will end up being the same
+local i = 0
+	if not backward then
+	local last = t[#t] -- store to assign to the 1st field
+		repeat
+		for i = #t,1,-1 do
+			if i < #t then t[i+1] = t[i] end
+		end
+		t[1] = last
+		last = t[#t]
+		i = i+1
+		until i == places
+	else
+	local first = t[1] -- store to assign to the last field
+		repeat
+		for i = 1, #t do
+			if i > 1 then t[i-1] = t[i]	end
+		end
+		t[#t] = first 
+		first = t[1]
+		i = i+1
+		until i == places
+	end
+end
+
+
+
+-- local t = {'Bb1','E3','D2','B4','F#5','G#1','Db2','C4','A5','B3','Eb3','G1'}
+-- in note names created by REAPER explode actions sharps are applied to F and G, flats are applied to D, E and B
+function sort_notes_by_name(t, wantReverse) -- wantReverse is boolean
+-- the notes must be capitalized to distinguish between B and flat sign b
+local pat = '[%-%d]+'
+table.sort(t, function(a,b) return a:match(pat) < b:match(pat) end) -- sort by octave
+local oct = -10 -- a value lower than the lowest octave number to be able to detect the 1st lowest and so forth
+local table_len = #t -- to be used in removing all separate note fields
+
+-- STEP 1
+	for _, v in ipairs(t) do -- store notes belonging to every octave in a separate nested table
+	local str = type(v) == 'string' -- could be table because nested tables are being added during the loop
+	-- outwitting sorting algo used below to make it place sharps later and flats earlier in the sequence, otherwise sharps are sorted to earlier slots because '#' precedes numerals in the character list while 'b' comes after numerals, numeral matter because in the note name they denote octave, so G#1 will precede G1 and E1 will precede Eb1	
+	local v = str and v:gsub('#','z') -- z follows numerals
+	local v = str and v:gsub('b','!') -- ! precedes numerals
+		if str and v:match(pat) > oct..'' then -- create a nested table and store first note name
+		t[#t+1] = {v}
+		oct = v:match(pat)
+		elseif str and v:match(pat) == oct..'' then -- keep adding note names to the nested table while the octave is the same
+		local len = #t[#t]
+		t[#t][len+1] = v
+		else break -- all strings have been removed, no point to continue
+		end
+	end
+	
+	for i = table_len, 1, -1 do -- remove all separate note fields
+	table.remove(t,i)
+	end
+	
+-- STEP 2	
+local table_len = #t -- to be used in removing all nested tables, there're fewer fields at this stage because their number is based on octaves
+
+	for k, v in ipairs(t) do -- sort each octave alphabetically 
+		if type(v) == 'table' then -- could be string because note names are being added during the loop
+		table.sort(v) -- sort nested table
+			for i = 1, #v do
+			local note = v[i]
+				if note:match('A') or note:match('B') then -- move these notes to the end of the list
+				v[#v+1] = note
+				v[i] = '' -- mark for deletion, deletion during the loop ruins the table but moving and deleting while iterating in reverse doesn't produce the accurate result, A ends up following B because it follows it in reversed loop
+				end
+			end
+			for i = #v,1,-1 do -- delete A and B placeholder fields if any
+				if v[i] == '' then table.remove(v,i) end
+			end
+		
+			for _, v in ipairs(v) do -- place nested table fields back to the main table in separate fields
+			local v = v:gsub('z','#') -- restoring sharps and flats
+			local v = v:gsub('!','b')
+			t[#t+1] = v
+			end
+		else break -- all tables have been removed, no point to continue
+		end		
+	end	
+	
+-- STEP 3	
+	for i = table_len, 1, -1 do -- remove all nested tables
+	table.remove(t,i)
+	end
+
+	if wantReverse then
+		--[[ reverse table -- WORKS
+		for i = #t,1,-1 do
+		t[#t+1] = t[i]
+		table.remove(t,i)
+		end
+		--]]	
+		--[-[ OR
+		for k, v in ipairs(t) do -- WORKS
+			if k > #t/2 then break end -- only run half the table length (rounded down half if the length is an odd number), otherwise the order will be restored
+		local i = k-1
+		t[k] = t[#t-i]
+		t[#t-i] = v
+		end
+		--]]
+	end
+
+--return t -- unnecessary because the table is the same
+
+end
+
+
 
 
 --=========================== T A B L E S  E N D ==============================
@@ -1377,7 +1516,8 @@ return r.MIDI_EnumSelEvts(take, -1) ~= -1 -- -- OR >= 0 OR > -1 // 1st selected 
 end
 
 
-function All_Sel_CCEvts_Belong_To_Visble_OR_Last_Clicked_Lane(ME, take) -- 2 boolean return values: if any selected and if true then if all belong to the same lane
+function All_Sel_CCEvts_Belong_To_Visble_OR_Last_Clicked_Lane(ME, take) -- ONLY USEFUL IF JUST ONE CC LANE IS OPEN WHICH MIGHT NOT BE THE CASE
+-- 2 boolean return values: if any selected and if true then if all belong to the same lane
 local ME = not ME and r.MIDIEditor_GetActive() or ME
 local take = not take and r.MIDIEditor_GetTake(ME) or take
 local autom_lane = r.MIDIEditor_GetSetting_int(ME, 'last_clicked_cc_lane') -- last clicked if several lanes are displayed, otherwise currently visible lane
@@ -1396,31 +1536,69 @@ return first_sel_evt_idx > -1, first[7] == autom_lane and first[7] == last[7] --
 end
 
 
-function count_selected_notes1(ME, take)
+function count_selected_notes(ME, take)
 local ME = not ME and r.MIDIEditor_GetActive() or ME
 local take = not take and r.MIDIEditor_GetTake(ME) or take
 local sel_note_cnt = 0
-local i = 0
-	repeat -- count notes
-	local note = r.MIDI_EnumSelNotes(take, i)
-	sel_note_cnt = note > -1 and sel_note_cnt+1 or sel_note_cnt
-	i = i+1
-	until note == -1 -- -1 if there are no more or no selected events
-return sel_note_cnt
-end
-
-
-function count_selected_notes2(ME, take)
-local ME = not ME and r.MIDIEditor_GetActive() or ME
-local take = not take and r.MIDIEditor_GetTake(ME) or take
-local sel_note_cnt = 0
-local noteidx = -1 -- since MIDI_EnumSelNotes returns the index of the next selected MIDI note, the first of which would be 0 
+local noteidx = -1 -- since MIDI_EnumSelNotes returns the index of the next selected MIDI note, the first of which would be 0
 	repeat	
 	noteidx = r.MIDI_EnumSelNotes(take, noteidx)
 	sel_note_cnt = noteidx > -1 and sel_note_cnt+1 or sel_note_cnt	
 	until noteidx == -1 -- -1 if there are no more or no selected events
-return sel_note_cnt	
+return sel_note_cnt
 end
+
+
+function count_selected_events(ME, take, evt_type, lane, ch) -- TEXT/SYSEX/NOTATION EVENTS ROUTINE ISN'T DEVELOPED
+-- IF FILTER OR MULTICHANNEL MODE ARE ENABLED THEY WILL HAVE TO BE DISABLED SO THE FUNCTIONS TARGET ALL MIDI CHANNELS AND NOT ONLY THE ACTIVE ONES
+-- evt_type is a string: '' - all, 'n' - notes, 'c' - cc, 't' - text/sysex
+-- cc covers 160 - Poly Aftertouch, 176 - CC, Bank/Program select, Bank select, 192 - Program change, 208 - Channel pressure (aftertouch), 224 - Pitch (bend)
+-- Use the above numbers as lane indices bar CC lanes (176) for which actual CC# should be used in the range of 0-119
+-- lane and ch are either tables or integers if only single lane or channel
+-- lane property is irrelevant for notes
+-- ch property is irrelevant to text, notation and sysex events
+local ME = not ME and r.MIDIEditor_GetActive() or ME
+local take = not take and r.MIDIEditor_GetTake(ME) or take
+local typ = evt_type:match('[nct]+')
+local EnumEvts, GetEvt = table.unpack(not typ and {r.MIDI_EnumSelEvts, r.MIDI_GetEvt} 
+or typ == 'n' and {r.MIDI_EnumSelNotes, r.MIDI_GetNote}
+or typ == 'c' and {r.MIDI_EnumSelCC, r.MIDI_GetCC} 
+or typ == 't' and {r.MIDI_EnumSelTextSysexEvts, r.MIDI_GetTextSysexEvt} or {})
+local ch = type(ch) == 'table' and ch or {ch}
+local lane = type(lane) == 'table' and lane or {lane}
+local sel_evt_cnt = 0
+local idx = -1 -- since EnumEvts returns the index of the next selected MIDI event, the first of which would be 0
+	repeat
+	idx = EnumEvts(take, idx)
+		if idx == -1 then break end
+	local evt_t = {GetEvt(take, idx)}
+	local ch_match, lane_match
+		if ch and typ ~= 't' then
+			for _, ch in ipairs(ch) do
+				if evt_t[6] == ch then ch_match = true break end -- in notes and cc event props ch is 6th return value
+			end
+		end
+		if lane and typ ~= 'n' then
+			for _, lane in ipairs(lane) do
+				if evt_t[5] == 176 and lane == msg2 or evt_t[5] == cc then lane_match = true break end -- in cc event props chanmsg is 5th return value, for CC messages (chanmsg = 176) lane number (CC#) is returned as msg2 value, for non-CC messages instead of actual lane number chanmsg value is evaluated since it's supposed to be passed as lane argument into the function // when Bank/Program select lane is visible the number of selected events there is trippled because they're counted in lanes 0 and 32 as well
+			end
+		end
+		
+	if typ == 'n' then -- notes, 
+	sel_evt_cnt = idx > -1 and (ch and ch_match or not ch) and sel_evt_cnt+1 or sel_evt_cnt
+	elseif typ == 'c' then
+	sel_evt_cnt = idx > -1 and (ch and ch_match or not ch) and (lane and lane_match or not lane) and sel_evt_cnt+1 or sel_evt_cnt
+	elseif typ == 't' then
+	sel_evt_cnt = idx > -1 and (lane and lane_match or not lane) and sel_evt_cnt+1 or sel_evt_cnt
+	else
+	sel_evt_cnt = idx > -1 and sel_evt_cnt+1 or sel_evt_cnt
+	end
+	until idx == -1 -- -1 if there are no more or no selected events
+	
+return sel_evt_cnt
+
+end
+
 
 
 function selected_notes_exist(ME, take)
@@ -1713,6 +1891,7 @@ local cur_CC_lane = cur_CC_lane == 513 and 224 or cur_CC_lane == 515 and 208 or 
 local evt_idx = 0
 	repeat
 	local retval, sel, muted, ppqpos, chanmsg, chan, msg2, msg3 = r.MIDI_GetCC(take, evt_idx) -- Velocity / Off Velocity / Text events / Notation enents / SySex lanes are ignored || only targets events in the current MIDI channel if Channel filter is enabled, if looking for genuine false or 0 values must be validated with retval which is only true for notes from current channel
+	-- Watch out for 'Bank/Program select' lane (chanmsg 176 but no dedicated lane number) because the number of events there is trippled as they're counted in lanes 0 and 32 as well
 		if retval then
 			if chanmsg == 176 and msg2 == cur_CC_lane then return msg2  -- CC message, chanmsg = 176 // as soon as event is found in the current lane
 			elseif chanmsg == cur_CC_lane then -- non-CC message (chanmsg =/= 176) 
@@ -1905,8 +2084,8 @@ end
 
 function Re_Store_Selected_CCEvents1(ME, take, t)
 -- !!!! will work if no events were deleted or added in the interim regardless of the MIDI channel
--- clicking within one MIDI channel doesn't affect event selection in other MIDI channels
--- deleting selected events in one MIDI channel with action doesn't affect selected events in other MIDI channels; in the same MIDI channels selected events are deleted regardless of their lane visibility
+-- if channel filter is enabled per channel clicking within one MIDI channel doesn't affect event selection in other MIDI channels
+-- if channel filter is enabled per channel deleting selected events in one MIDI channel with action doesn't affect selected events in other MIDI channels; in the same MIDI channels selected events are deleted regardless of their lane visibility
 -- with the mouse CC events can only be selected in one lane, the selection is exclusive just like track automation envelope nodes unless Shift is held down, marque selection or Ctrl+A are used
 local ME = not ME and r.MIDIEditor_GetActive() or ME
 local take = not take and r.MIDIEditor_GetTake(ME) or take
@@ -1941,9 +2120,9 @@ end
 
 
 function Re_Store_Selected_CCEvents2(ME, take, t, deselect_before_restore) -- deselect_before_restore is boolean
--- !!!! will work EVEN IF events were deleted or added in the interim BUT FOR THE CURRENT MIDI CHANNEL ONLY
--- clicking within one MIDI channel doesn't affect event selection in other MIDI channels
--- deleting selected events in one MIDI channel with action doesn't affect selected events in other MIDI channels; in the same MIDI channels selected events are deleted regardless of their lane visibility
+-- !!!! will work EVEN IF events were deleted or added in the interim BUT FOR THE  CURRENTLY ACTIVE MIDI CHANNELS IF THE MIDI FILTER IS ENABLED
+-- if channel filter is enabled per channel clicking within one MIDI channel doesn't affect event selection in other MIDI channels
+-- if channel filter is enabled per channel deleting selected events in one MIDI channel with action doesn't affect selected events in other MIDI channels; in the same MIDI channels selected events are deleted regardless of their lane visibility
 -- with the mouse CC events can only be selected in one lane, the selection is exclusive just like track automation envelope nodes unless Shift is held down, marque selection or Ctrl+A are used
 local ME = not ME and r.MIDIEditor_GetActive() or ME
 local take = not take and r.MIDIEditor_GetTake(ME) or take
@@ -1976,17 +2155,23 @@ local take = not take and r.MIDIEditor_GetTake(ME) or take
 	local evt_idx = 0
 		repeat
 		local evt_data = {r.MIDI_GetCC(take, evt_idx)} -- only targets events in the current MIDI channel if Channel filter is enabled
-		local restore
+	--	local restore
 			for _, evt_data_stored in ipairs(t) do
 			local match = 0
 				for i = 3, 8 do -- extract and compare values one by one; only 6 values are relevant, 3 - 8, i.e. muted, ppqpos, chanmsg, chan, msg2, msg3
 				local val1 = table.unpack(evt_data, i, i) -- the 3d argument isn't really necessary since even when multiple values are returned starting from index up to the end, only the first one is stored
 				local val2 = table.unpack(evt_data_stored, i, i)
 					if val1 == val2 then match = match+1 end
+			 -- OR
+			 -- match = evt_data[i] == evt_data_stored[i] and match+1 or match
 				end
 				if match == 6 then restore = 1 break end -- 6 return values match
+			-- OR 
+			-- if match == 6 then break end -- 6 return values match
 			end
 			if restore then -- restore
+		 -- OR
+		 -- if match == 6 then
 			local retval, sel, muted, ppqpos, chanmsg, chan, msg2, msg3 = table.unpack(evt_data) -- if only selection and event count changed these values aren't needed
 			r.MIDI_SetCC(take, evt_idx, true, mutedIn, ppqposIn, chanmsgIn, chanIn, msg2In, msg3In, true) -- selectedIn, noSortIn true
 			end
@@ -1999,8 +2184,8 @@ end
 
 function Re_Store_Selected_CCEvents3(ME, take, t, deselect_before_restore) -- deselect_before_restore is boolean
 -- !!!! will work EVEN IF events were deleted or added in the interim FOR ALL MIDI CHANNELS
--- clicking within one MIDI channel doesn't affect event selection in other MIDI channels
--- deleting selected events in one MIDI channel with action doesn't affect selected events in other MIDI channels; in the same MIDI channels selected events are deleted regardless of their lane visibility
+-- if channel filter is enabled per channel clicking within one MIDI channel doesn't affect event selection in other MIDI channels
+-- if channel filter is enabled per channel deleting selected events in one MIDI channel with action doesn't affect selected events in other MIDI channels; in the same MIDI channels selected events are deleted regardless of their lane visibility
 -- with the mouse CC events can only be selected in one lane, the selection is exclusive just like track automation envelope nodes unless Shift is held down, marque selection or Ctrl+A are used
 local ME = not ME and r.MIDIEditor_GetActive() or ME
 local take = not take and r.MIDIEditor_GetTake(ME) or take
@@ -2059,10 +2244,16 @@ local cur_ch_comm_ID = 40218 + cur_chan -- 40218 is 'Channel: Show only channel 
 					local val1 = table.unpack(evt_data, i, i) -- the 3d argument isn't really necessary since even when multiple values are returned starting from index up to the end, only the first one is stored
 					local val2 = table.unpack(evt_data_stored, i, i)
 						if val1 == val2 then match = match+1 end
+				 -- OR
+				 -- match = evt_data[i] == evt_data_stored[i] and match+1 or match
 					end
 					if match == 6 then restore = 1 break end -- 6 return values match
+				 -- OR 
+				 -- if match == 6 then break end -- 6 return values match
 				end
 				if restore then -- restore
+			 -- OR	
+			 -- if match == 6 then
 				local retval, sel, muted, ppqpos, chanmsg, chan, msg2, msg3 = table.unpack(evt_data) -- if only selection and event count changed these values aren't needed
 				r.MIDI_SetCC(take, evt_idx, true, mutedIn, ppqposIn, chanmsgIn, chanIn, msg2In, msg3In, true) -- selectedIn, noSortIn true // only targets events in the current MIDI channel if Channel filter is enabled, if looking for genuine false or 0 values must be validated with retval which is only true for events from current channel // if looking for all events use Clear_Restore_MIDI_Channel_Filter() to disable filter if enabled and re-enable afterwards
 				end
@@ -2078,7 +2269,7 @@ end
 
 
 -- VISIBLE actually means selected in the left hand CC lane menu, regardless of its being collapsed or not
-function Get_Currently_Visible_CC_Lanes(ME, take) -- must be preceded and followed by Re_Store_Selected_CCEvents3() because it changes selection
+function Get_Currently_Visible_CC_Lanes(ME, take) -- WITH EVENTS ONLY, must be preceded and followed by Re_Store_Selected_CCEvents3() because it changes selection
 -- lanes of 14-bit CC messages aren't supported because the action 40802 'Edit: Select all CC events in time selection (in all visible CC lanes)' doesn't select their events, it only does if their 7-bit lane is open; doesn't affect non-CC lanes; doesn't deselect events in invisible lanes
 local ME = not ME and r.MIDIEditor_GetActive() or ME
 local take = not take and r.MIDIEditor_GetTake(ME) or take
@@ -2094,28 +2285,35 @@ r.PreventUIRefresh(1)
 
 r.MIDIEditor_LastFocused_OnCommand(40802, false) -- islistviewcommand false // Edit: Select all CC events in time selection (in all visible CC lanes) -- DOESN'T AFFECT non-CC events BUT IGNORES visible 14 bit CC lanes // EXCLUSIVE, i.e. deselects all other CC events
 -- https://forum.cockos.com/showthread.php?t=272887
-local i = -1 -- start with -1 since MIDI_EnumSelCC returns idx of the next event hence will actually start from 0
-local t = {}
+local idx = -1 -- start with -1 since MIDI_EnumSelCC returns idx of the next event hence will actually start from 0
+local evt_t, ch_t = {}, {}
 	repeat
-	local idx = r.MIDI_EnumSelCC(take, i)
+	idx = r.MIDI_EnumSelCC(take, idx)
 		if idx > -1 then
 		local retval, sel, muted, ppqpos, chanmsg, chan, msg2, msg3 = r.MIDI_GetCC(take, idx) -- point indices are based on their time position hence points with sequential indices will likely belong to different CC envelopes // only targets events in the current MIDI channel if Channel filter is enabled // if looking for all events use Clear_Restore_MIDI_Channel_Filter() to disable filter if enabled and re-enable afterwards
 		local stored
-			for _, cc in ipairs(t) do
+			for _, cc in ipairs(evt_t) do
 				if cc == msg2 or cc == chanmsg then stored = 1 break end
 			end
-			if not stored then t[#t+1] = chanmsg == 176 and msg2 or chanmsg end -- only collect unique numbers of CC messages (chanmsg = 176) for which msg2 value represents CC#, or non-CC messages which have channel data (chanmsg is not 176) for which msg2 value doesn't represent CC#; chanmsg = Pitch bend - 224, Program - 192, Channel pressure - 208, Poly aftertouch - 160		
+			if not stored then evt_t[#evt_t+1] = chanmsg == 176 and msg2 or chanmsg  -- only collect unique numbers of CC messages (chanmsg = 176) for which msg2 value represents CC#, or non-CC messages which have channel data (chanmsg is not 176) for which msg2 value doesn't represent CC#; chanmsg = Pitch bend - 224, Program - 192, Channel pressure - 208, Poly aftertouch - 160
+			end
+		local stored
+			for _, ch in ipairs(ch_t) do
+				if ch == chan then stored = 1 break end
+			end
+			if not stored then ch_t[#ch_t+1] = chan end
 		end
-	i = i+1
+--	i = i+1
 	until idx == -1
 --[[ ALSO WORKS
 local retval, notecnt, ccevtcnt, textsyxevtcnt = r.MIDI_CountEvts(take)
 	for i = 0, ccevtcnt-1 do
 	local retval, sel, muted, ppqpos, chanmsg, chan, msg2, msg3 = r.MIDI_GetCC(take, i) -- point indices are based on their time position hence points with sequential indices will likely belong to different CC envelopes
-		for _, cc in ipairs(t) do
+		for _, cc in ipairs(evt_t) do
 			if cc == msg2 or cc == chanmsg then stored = 1 break end
 		end
-		if not stored then t[#t+1] = chanmsg == 176 and msg2 or chanmsg end -- only collect unique numbers of CC messages (chanmsg = 176) for which msg2 value represents CC#, or non-CC messages which have channel data (chanmsg is not 176) for which msg2 value doesn't represent CC#; chanmsg = Pitch bend - 224, Program - 192, Channel pressure - 208, Poly aftertouch - 160
+		if not stored then evt_t[#evt_t+1] = chanmsg == 176 and msg2 or chanmsg -- only collect unique numbers of CC messages (chanmsg = 176) for which msg2 value represents CC#, or non-CC messages which have channel data (chanmsg is not 176) for which msg2 value doesn't represent CC#; chanmsg = Pitch bend - 224, Program - 192, Channel pressure - 208, Poly aftertouch - 160
+		ch_t[#ch_t+1] = chan
 		end
 	end
 --]]
@@ -2126,40 +2324,61 @@ local retval, notecnt, ccevtcnt, textsyxevtcnt = r.MIDI_CountEvts(take)
 
 r.GetSet_LoopTimeRange(true, false, time_st, time_end, false) -- isSet true, isLoop, allowautoseek false // restore
 r.PreventUIRefresh(-1)
-table.sort(t)
-return t
+table.sort(evt_t) table.sort(ch_t)
+return evt_t, ch_t
 
 end
 
 
 -- VISIBLE actually means selected in the left hand CC lane menu, regardless of its being collapsed or not
-function Only_ReSelect_Evnts_In_Visble_CC_Lanes(sel_evts_t, vis_lanes_t, take) 
+function Only_ReSelect_Evnts_In_Visble_CC_Lanes(sel_evts_t, vis_lanes_t, evt_ch_t, take) 
 -- Only re-select originally selected events in the visible lanes // can be modified to select all events in visible lanes whether originally selected or not
 -- sel_evts_t and vis_lanes_t are tables returned by Re_Store_Selected_CCEvents3() and Get_Currently_Visible_CC_Lanes() above respectively
+-- evt_ch_t is returned by Get_Currently_Active_Chan_And_Filter_State() function
+-- search by index isn't reliable as they change after sorting, so all return values must be collated to find originally selected events bar selected status value because at this stage the event won't be selected; this loop basically searches for current indices of the stored events so they can be re-selected
 Re_Store_Selected_CCEvents3(take) -- deselect all
-local cur_chan = r.MIDIEditor_GetSetting_int(ME, 'default_note_chan') -- 0-15
-	for _, sel_evts_data in ipairs(sel_evts_t) do
-	local chmsg, chan, msg2 = sel_evts_data[5], sel_evts_data[6], sel_evts_data[7]	
-		if chan == cur_chan then
-			for _, cc in ipairs(vis_lanes_t) do
-				if chmsg == 176 and cc == msg2 -- CC message, chanmsg = 176
-				or chmsg == cc then -- non-CC message (chanmsg =/= 176) which has channel data, such as Pitch, Channel pressure, ProgramChange and for which chanmsg value is stored instead since it's unique while their msg2 value doesn't refer to the CC#
-				local evt_idx = sel_evts_data[9]
-				r.MIDI_SetCC(take, evt_idx, true, mutedIn, ppqposIn, chanmsgIn, chanIn, msg2In, msg3In, true) -- selectedIn, noSortIn true
+local i = 0	
+	repeat
+		local evt_data = {r.MIDI_GetCC(take, i)}		
+		for _, sel_evts_data in ipairs(sel_evts_t) do		
+		local match_cnt = 0		
+			for i = 3, 8 do
+			match_cnt = evt_data[i] == sel_evts_data[i] and match_cnt+1 or match_cnt
+			end			
+			if match_cnt == 6 then -- original event found in sel_evts_t table
+			local chmsg, chan, msg2 = table.unpack(sel_evts_data,5,7)
+			-- determine if the original event belongs to one of the visible lanes, 14-bit lane events aren't supported	
+			local evt_match		
+				for _, cc in ipairs(vis_lanes_t) do
+					if chmsg == 176 and cc == msg2 -- CC message, chanmsg = 176
+					or chmsg == cc then -- non-CC message (chanmsg =/= 176) which has channel data, such as Pitch, Channel pressure, ProgramChange and for which chanmsg value is stored instead since it's unique while their msg2 value doesn't refer to the CC#
+					evt_match = 1
+					break end
+				end
+				-- when channel filter is enabled per channel or multichannel mode is enabled, belonging to one of the visible lanes isn't enough because the channel an event belongs to may not be visible
+				if evt_match then
+					for _, ch in ipairs(evt_ch_t) do
+						if chan == ch-1 then -- ch-1 because channels are stored by Get_Currently_Active_Chan_And_Filter_State() using 1-based count
+						r.MIDI_SetCC(take, i, true, mutedIn, ppqposIn, chanmsgIn, chanIn, msg2In, msg3In, true) -- selectedIn, noSortIn true
+						break end 
+					end
 				end
 			end
 		end
-	end
+	until not evt_data[1]
+	
 r.MIDI_Sort(take)
+
 end
 
 
 -- VISIBLE actually means selected in the left hand CC lane menu, regardless of its being collapsed or not
 function Get_Visible_Lanes_With_Selected_Events(ME, take, vis_lanes_t) -- vis_lanes_t stems from Get_Currently_Visible_CC_Lanes() function
+-- 14-bit lanes aren't supported if Get_Currently_Visible_CC_Lanes() was used
 local ME = not ME and r.MIDIEditor_GetActive() or ME
 local take = not take and r.MIDIEditor_GetTake(ME) or take
 -- Find numbers of the message types of visible lanes with selected events
-local lanes_with_sel_evts_t = {}
+local lanes_with_sel_evts_t, ch_t = {}, {}
 local evt_idx = 0
 	repeat
 	local retval, sel, muted, ppqpos, chanmsg, chan, msg2, msg3 = r.MIDI_GetCC(take, evt_idx) -- only targets events in the current MIDI channel if Channel filter is enabled, if looking for genuine false or 0 values must be validated with retval which is only true for notes from current channel
@@ -2175,12 +2394,17 @@ local evt_idx = 0
 					local len = #lanes_with_sel_evts_t+1
 					lanes_with_sel_evts_t[len] = chanmsg == 176 and msg2 or chanmsg -- only collect unique numbers of CC messages (chanmsg = 176) for which msg2 value represents CC#, or non-CC messages which have channel data (chanmsg is not 176) for which msg2 value doesn't represent CC#; chanmsg = Pitch bend - 224, Program - 192, Channel pressure - 208, Poly aftertouch - 160
 					end
+				local stored
+					for _, ch in ipairs(ch_t) do
+						if ch == chan then stored = 1 break end
+					end
+					if not stored then ch_t[#ch_t+1] = chan end
 				end
 			end
 		end
 	evt_idx = evt_idx+1
 	until not retval
-return lanes_with_sel_evts_t
+return lanes_with_sel_evts_t, ch_t
 end
 
 
@@ -2627,6 +2851,28 @@ function re_store_obj_selection(t1, t2)
 			r.SetMediaItemSelected(itm, true) -- selected true
 			end
 		end
+	end
+end
+
+
+
+function Find_And_Get_New_Objects(t, wantItems) -- wantItems is boolean
+local Count, Get = table.unpack(not wantItems and {r.CountTracks, r.GetTrack} or {r.CountMediaItems,r.GetMediaItem})
+	if not t then
+	local t = {}
+		for i = 0, Count(0)-1 do
+		t[r.Get(0,i)] = '' -- dummy field
+		end
+	return t
+	elseif t then
+	local t2 = {}
+		for i = 0, Count(0)-1 do
+		local obj = Get(0,i)
+			if not t[obj] then -- track wasn't stored so is new
+			t2[#t2+1] = {obj=obj, idx=i}
+			end
+		end
+	return #t2 > 0 and t2
 	end
 end
 
@@ -6574,6 +6820,25 @@ end
 -- Re_Store_Apply_Stretch_Markers(src_take, dest_take, t)
 
 
+function Find_And_Get_New_Items(t)
+	if not t then
+	local t = {}
+		for i = 0, r.CountMediaItems(0)-1 do
+		t[r.GetMediaItem(0,i)] = '' -- dummy field
+		end
+	return t
+	elseif t then
+	local t2 = {}
+		for i = 0, r.CountMediaItems(0)-1 do
+		local itm = r.GetMediaItem(0,i)
+			if not t[itm] then -- track wasn't stored so is new
+			t2[#t2+1] = itm
+			end
+		end
+	return #t2 > 0 and t2
+	end
+end
+
 
 --================================ I T E M S   E N D ==================================
 
@@ -8874,9 +9139,9 @@ do
 end
 
 c=utf8(0x24)    print(c.." is "..#c.." bytes.") --> $ is 1 bytes.
-c=utf8(0xA2)    print(c.." is "..#c.." bytes.") --> ¢ is 2 bytes.
-c=utf8(0x20AC)  print(c.." is "..#c.." bytes.") --> € is 3 bytes.  
-c=utf8(0x24B62) print(c.." is "..#c.." bytes.") --> 𤭢 is 4 bytes.  
+c=utf8(0xA2)    print(c.." is "..#c.." bytes.") --> Вў is 2 bytes.
+c=utf8(0x20AC)  print(c.." is "..#c.." bytes.") --> в‚¬ is 3 bytes.  
+c=utf8(0x24B62) print(c.." is "..#c.." bytes.") --> р¤­ў is 4 bytes.  
 
 --------------------------------------------------
 
