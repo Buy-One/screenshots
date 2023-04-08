@@ -99,7 +99,7 @@ local scr_name = scr_name:match('([^\\/]+)%.%w+') -- without path and extension
 local scr_name = scr_name:match('([^\\/_]+)%.%w+') -- without path & scripter name
 local scr_name = scr_name:match('[^\\/]+_(.+)%.%w+') -- without path, scripter name & ext
 local scr_name = scr_name:match('.+[\\/](.+)') -- whole script name without path
-local named_ID = r.ReverseNamedCommandLookup(cmd_ID) -- diff sections may probably have identical numeric cmd_IDs // script aplhanumeic command IDs differ in the alphabetic prefix
+local named_ID = r.ReverseNamedCommandLookup(cmd_ID) -- diff sections may probably have identical numeric cmd_IDs // script aplhanumeic command IDs in different Action list sections differ in the alphabetic prefix
 local path = r.GetResourcePath()
 local sep = r.GetResourcePath():match('[\\/]')
 local sep = r.GetOS():match('Win') and '\\' or '/'
@@ -315,7 +315,7 @@ ENABLE_SCRIPT = ""
 function Script_Not_Enabled(ENABLE_SCRIPT)
 	if #ENABLE_SCRIPT:gsub(' ','') == 0 then
 	local emoji = [[
-		_(гѓ„)_
+		_(ツ)_
 		\_/|\_/
 	]]
 	r.MB('  Please enable the script in its USER SETTINGS.\n\nSelect it in the Action list and click "Edit action...".\n\n'..emoji, 'PROMPT', 0)
@@ -1400,7 +1400,7 @@ MIDI_GetCC()
 -- chanmsg (event type): 
 -- 0 - non-CC: (off) velocity, text/notation/sysex events, 160 - Poly Aftertouch, 176 - CC, Bank/Program select, Bank select, 192 - Program change, 208 - Channel pressure (aftertouch), 224 - Pitch (bend)
 -- msg2:
--- always 0 for non-CC, Bank/Program select, Bank select events
+-- always 0 for non-CC, Bank/Program select, 00 Bank select MSB events
 -- first 7 bits (MSB) of event value for Pitch (msg3 provides second 7 bits (LSB))
 -- program number for Program
 -- event value for Channel pressure
@@ -1408,7 +1408,7 @@ MIDI_GetCC()
 -- msg3:
 -- always 0 for non-CC, Program, Channel pressure 
 -- second 7 bits (LSB) of event value for Pitch (msg2 provides first 7 bits (MSB))
--- bank MSB for Bank/Program select and 00 Bank MSB events, 0 if Bank/Program select event doesn't have .reabank loaded
+-- bank MSB for Bank/Program select and 00 Bank select MSB events, 0 if Bank/Program select event doesn't have .reabank loaded
 -- event value for CC events
 
 
@@ -1940,9 +1940,14 @@ end
 
 
 -- USE THIS, COMPREHENSIVE FUNCTION
-function Get_Currently_Active_Chan_And_Filter_State2(obj) -- when Multichannel option is enabled in the Channel filter // via chunk
--- returns channel filter status and the channels currently selected in the filter regardless of its being enabled
+function Get_Currently_Active_Chan_And_Filter_State2(obj, ME) -- via chunk, ME is MIDI Editor pointer
+-- returns channel filter status and the channels currently selected in the filter regardless of its being enabled in 1-BASED COUNT
 -- for a single active channel when filter is enabled see Get_Ch_Selected_In_Ch_Filter() or Ch_Filter_Enabled1()
+-- filter enabled status is true when either a single channel is active, multichannel mode is active or 'Show only events that pass the filter' option is checked in Event filter dialogue and can be true when 'All channels' option is active in the menu as well; 
+-- when the table contains a single channel this means this channel is selected in the filter drop-down menu, in this case the filter status indicates whether this channel is exclusively displayed; 
+-- when the table contains several channels the filter state is always true;
+-- the table's being empty means that ALL channels are active, i.e. 'All channels' option is selected in the filter drop-down menu while filter isn't enabled, filter_state will be false, in this case last active channel will be returned;
+-- 16 entries in the table mean that ALL channels are active, i.e. 'All channels' option is selected while the filter is enabled, filter_state will be true
 local item = r.ValidatePtr(obj, 'MediaItem*')
 local take = r.ValidatePtr(obj, 'MediaItem_Take*')
 local item = item and obj or take and r.GetMediaItemTake_Item(obj)
@@ -1967,17 +1972,13 @@ local act_ch_t, filter_state = {}
 				for i = 0, 15 do
 				local bit = 2^i
 					if val&bit == bit then -- channel numbers are 0-based logarithm of the value from the chunk with base 2
-					act_ch_t[#act_ch_t+1] = i+1 -- 1-based channel number
+					act_ch_t[#act_ch_t+1] = i+1 -- 1-based channel number // can be changed
 					end
 				end
 			break end -- break to prevent chunk loop from continuing and getting data from next takes because take_found remains valid, it could be reset to nil at this point but this wouldn't stop the chunk loop
 		end
 	end
--- filter enabled status is true when either a single channel is active, multichannel mode is active or 'Show only events that pass the filter' option is checked in Event filter dialogue and can be true when 'All channels' option is active in the menu as well; 
--- when the table contains a single channel this means this channel is selected in the filter drop-down menu, in this case the filter status indicates whether this channel is exclusively displayed; 
--- when the table contains several channels the filter state is always true;
--- the table's being empty regardless of the filter state means that ALL channels are active, i.e. 'All channels' option is selected in the filter drop-down menu, which means that this option can coexist with filter's being enabled
-return act_ch_t, filter_state == '1'
+return #act_ch_t > 0 and act_ch_t or {r.MIDIEditor_GetSetting_int(ME, 'default_note_chan')+1}, filter_state == '1' -- 1-based last active channel number
 end
 
 
@@ -7529,9 +7530,12 @@ r.TrackCtl_SetToolTip('TEXT', x, y, true) -- topmost is true; if x and y are tak
 end
 
 
-function Error_Tooltip(text)
+function Error_Tooltip(text, caps, spaced) -- caps and spaced are booleans
 local x, y = r.GetMousePosition()
-r.TrackCtl_SetToolTip(text:upper(), x, y, true) -- topmost true
+local text = caps and text:upper() or text
+local text = spaced and text:gsub('.','%0 ') or text
+r.TrackCtl_SetToolTip(text, x, y, true) -- topmost true
+-- r.TrackCtl_SetToolTip(text:upper(), x, y, true) -- topmost true
 -- r.TrackCtl_SetToolTip(text:upper():gsub('.','%0 '), x, y, true) -- spaced out // topmost true
 --[[
 -- a time loop can be added to run when certan condition obtains, e.g.
@@ -9139,9 +9143,9 @@ do
 end
 
 c=utf8(0x24)    print(c.." is "..#c.." bytes.") --> $ is 1 bytes.
-c=utf8(0xA2)    print(c.." is "..#c.." bytes.") --> Вў is 2 bytes.
-c=utf8(0x20AC)  print(c.." is "..#c.." bytes.") --> в‚¬ is 3 bytes.  
-c=utf8(0x24B62) print(c.." is "..#c.." bytes.") --> р¤­ў is 4 bytes.  
+c=utf8(0xA2)    print(c.." is "..#c.." bytes.") --> ¢ is 2 bytes.
+c=utf8(0x20AC)  print(c.." is "..#c.." bytes.") --> € is 3 bytes.  
+c=utf8(0x24B62) print(c.." is "..#c.." bytes.") --> 𤭢 is 4 bytes.  
 
 --------------------------------------------------
 
