@@ -99,7 +99,7 @@ local scr_name = scr_name:match('([^\\/]+)%.%w+') -- without path and extension
 local scr_name = scr_name:match('([^\\/_]+)%.%w+') -- without path & scripter name
 local scr_name = scr_name:match('[^\\/]+_(.+)%.%w+') -- without path, scripter name & ext
 local scr_name = scr_name:match('.+[\\/](.+)') -- whole script name without path
-local named_ID = r.ReverseNamedCommandLookup(cmd_ID) -- diff sections may probably have identical numeric cmd_IDs // script aplhanumeic command IDs in different Action list sections differ in the alphabetic prefix
+local named_ID = r.ReverseNamedCommandLookup(cmd_ID) -- to ensure more unique extended state section name, diff sections may probably have identical numeric cmd_IDs // script aplhanumeic command IDs in different Action list sections differ in the alphabetic prefix
 local path = r.GetResourcePath()
 local sep = r.GetResourcePath():match('[\\/]')
 local sep = r.GetOS():match('Win') and '\\' or '/'
@@ -1221,7 +1221,7 @@ end
 
 -- local t = {'Bb1','E3','D2','B4','F#5','G#1','Db2','C4','A5','B3','Eb3','G1'}
 -- in note names created by REAPER explode actions sharps are applied to F and G, flats are applied to D, E and B
-function sort_notes_by_name(t, wantReverse) -- wantReverse is boolean
+function sort_notes_by_name(t, wantReverse) -- t is an array containing note names, wantReverse is boolean
 -- the notes must be capitalized to distinguish between B and flat sign b
 local pat = '[%-%d]+'
 table.sort(t, function(a,b) return a:match(pat) < b:match(pat) end) -- sort by octave
@@ -1378,7 +1378,7 @@ end
 --================================ M I D I ================================
 
 r.MIDIEditor_GetSetting_int(ME, 'last_clicked_cc_lane')
--- 0 -- no last clicked lane
+-- -1 -- Piano roll was last clicked context
 -- 0 - 127 -- regular CC lanes
 -- 256 - 287 -- 31 14-bit CC lanes
 -- 513 -- pitch
@@ -1390,9 +1390,8 @@ r.MIDIEditor_GetSetting_int(ME, 'last_clicked_cc_lane')
 -- 519 -- off velocity
 -- 517 -- text events
 -- 518 -- SysEx
--- 517 -- text events
 -- 520 -- notation events
--- 522 -- media item lane
+-- 522 -- media item lane // doesn't seem to be actually returned by the function, instead returns last clicked lane or -1
 
 r.MIDIEditor_GetSetting_int(ME, 'default_note_chan') -- returns channel currently selected in the MIDI Editor channel drop-down menu or last selected if 'All channels' or 'Multichannel' menu option is active
 
@@ -1410,6 +1409,44 @@ MIDI_GetCC()
 -- second 7 bits (LSB) of event value for Pitch (msg2 provides first 7 bits (MSB))
 -- bank MSB for Bank/Program select and 00 Bank select MSB events, 0 if Bank/Program select event doesn't have .reabank loaded
 -- event value for CC events
+MIDI_GetTextSysexEvt()
+-- type var
+-- text events: 1 text, 2 copyright notice, 3 track name, 4 instrument name, 5 lyrics, 6 marker, 7 cue, 8 program name, 9 device name
+-- notation event: 15
+-- sysex event: -1
+-- setting sysex event data https://forums.cockos.com/showthread.php?p=2267909
+r.MIDI_InsertTextSysexEvt() -- not inserted with empty bytestr argument
+-- to insert a notation event linked to a note bytestr string must include 'NOTE' prefix, channel number and note number, e.g 'NOTE '..chan..' '..note, it can be additionally complemented with text, e.g. 'NOTE '..chan..' '..note..' '..text; 'TRAC ' prefix pertains to notation events inserted in the Notation events lane which aren't linked to notes
+-- https://forum.cockos.com/showthread.php?t=273389&page=3#111
+-- https://forum.cockos.com/showthread.php?p=2636270
+-- https://forum.cockos.com/showthread.php?t=278052
+-- the 'NOTE' and 'TRAC' prefixes are contained in the msg return value of r.MIDI_GetTextSysexEvt() depending on the source of the event, as well as in stuffed data
+-- using stuffed MIDI data
+-- https://github.com/MichaelPilyavskiy/ReaScripts/blob/master/MIDI%20editor/mpl_Remove%20MIDI%20CC.lua
+-- https://forum.cockos.com/showthread.php?t=241140
+
+
+function Lane_Type_To_Event_Data(ME) -- relies on Error_Tooltip() for error message
+-- further implementation see in Insert MIDI event at edit cursor.lua
+local ME = not ME and r.MIDIEditor_GetActive()
+local last_clicked_lane = r.MIDIEditor_GetSetting_int(ME, 'last_clicked_cc_lane')
+
+	if last_clicked_lane == -1 then  -- last clicked lane return value is -1 when the Piano roll was last clicked context
+	Error_Tooltip('\n\nthe last clicked lane is undefined\n\n  click any lane to make it active \n\n', 1, 1) -- caps, spaced true
+	return end
+
+return (last_clicked_lane >= 0 and last_clicked_lane <= 119 -- regular 7-bit cc lanes
+or last_clicked_lane >= 256 and last_clicked_lane <= 287) -- 14-bit lanes
+and 176
+or last_clicked_lane == 513 and 224 -- pitch
+or last_clicked_lane == 514 and 192 -- program change
+or last_clicked_lane == 515 and 208 -- channel pressure (aftertouch)
+or last_clicked_lane == 516 and 176 -- Bank/Program select // the data in this lane is linked to CC#00 Bank select MSB lane, events created in one automatically appear in the other, for both MIDI_GetCC() chanmsg return value is 176
+or last_clicked_lane == 517 and 1 -- text events, between 1 and 14, currently only 9 are available // the value will be fine tuned in the loop so that all text event types are covered
+or last_clicked_lane == 518 and -1 -- sysex event
+or last_clicked_lane == 520 and 15 -- notation event
+
+end
 
 
 function MIDI_Take_Open_Close(is_open, item)
