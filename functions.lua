@@ -36,6 +36,8 @@ M A R K E R S  &  R E G I O N S
 
 G F X
 
+W I N D O W S
+
 B A S E 6 4  E N / D E C O D E R
 
 U N I C O D E  --  U T F - 8   C O N V E R T E R
@@ -413,6 +415,14 @@ do r.defer(function() do return end end) end
 -- neither works work if a shortcut is held continuously
 
 
+function no_undo()
+do return end
+end
+-- do return r.defer(no_undo) end
+-- OR
+-- if ... then return r.defer(no_undo) end
+
+
 function no_undo() end
 do return r.defer(no_undo) end -- 'return' isn't required
 
@@ -433,13 +443,19 @@ r.Undo_EndBlock(undo, -1)
 else r.Undo_EndBlock('', -1) end
 
 
-function Force_MIDI_Undo_Point(take)
+function Force_MIDI_Undo_Point1(take)
 -- a trick shared by juliansader to force MIDI API to register undo point; Undo_OnStateChange() works too but with native actions it may create extra undo points, therefore Undo_Begin/EndBlock() functions must stay
 -- https://forum.cockos.com/showpost.php?p=1925555
 local item = r.GetMediaItemTake_Item(take)
 local is_item_sel = r.IsMediaItemSelected(item)
 r.SetMediaItemSelected(item, not is_item_sel)
 r.SetMediaItemSelected(item, is_item_sel)
+end
+
+function Force_MIDI_Undo_Point2(take) -- may or may not work, the above version is more reliable
+local item = r.GetMediaItemTake_Item(take)
+local tr = r.GetMediaItemTrack(item)
+r.MarkTrackItemsDirty(tr, item)
 end
 
 
@@ -1222,6 +1238,7 @@ end
 -- local t = {'Bb1','E3','D2','B4','F#5','G#1','Db2','C4','A5','B3','Eb3','G1'}
 -- in note names created by REAPER explode actions sharps are applied to F and G, flats are applied to D, E and B
 function sort_notes_by_name(t, wantReverse) -- t is an array containing note names, wantReverse is boolean
+-- the notes must use # and b for sharps and flats
 -- the notes must be capitalized to distinguish between B and flat sign b
 local pat = '[%-%d]+'
 table.sort(t, function(a,b) return a:match(pat) < b:match(pat) end) -- sort by octave
@@ -1301,7 +1318,40 @@ local table_len = #t -- to be used in removing all nested tables, there're fewer
 end
 
 
+function binary_search(t, value)
+-- https://stackoverflow.com/questions/19522451/binary-search-of-an-array-of-arrays-in-lua
+local lo = 1
+local hi = #t
+local mid
+	while lo < hi do
+	mid = math.floor((lo+hi)/2)
+		if t[mid] < value then
+			lo = mid+1
+		else
+			hi = mid
+		end
+	end
+	return lo
+end
 
+
+function binary_search(t, value) -- my implementation, isn't the classic method
+-- the speed advantage over simple iteration only starts to be felt from about 100,000 array entries
+-- https://github.com/ReaTeam/ReaScripts/blob/master/MIDI%20Editor/js_Notation%20-%20Set%20displayed%20length%20of%20selected%20notes%20to%20custom%20value.lua -- idea source
+-- https://github.com/Roblox/Wiki-Lua-Libraries/blob/master/StandardLibraries/BinarySearch.lua
+local mid = 1
+local fin = #t
+	while t[mid] < value do
+	local result = math.floor((fin+mid)/2)
+		if t[result] < value and result ~= mid then mid = result -- result ~= mid prevents endless loop when the sought value is the last in the array
+		elseif 
+		t[result] > value and result ~= fin then fin = result
+		else break end -- breaks short of the searched last value by 1
+	end
+	for i = mid, fin do
+		if t[i] == value then return i end
+	end
+end
 
 --=========================== T A B L E S  E N D ==============================
 
@@ -1391,7 +1441,7 @@ r.MIDIEditor_GetSetting_int(ME, 'last_clicked_cc_lane')
 -- 517 -- text events
 -- 518 -- SysEx
 -- 520 -- notation events
--- 522 -- media item lane // doesn't seem to be actually returned by the function, instead returns last clicked lane or -1
+-- 528 -- media item lane // doesn't seem to be actually returned by the function, instead returns last clicked lane or -1
 
 r.MIDIEditor_GetSetting_int(ME, 'default_note_chan') -- returns channel currently selected in the MIDI Editor channel drop-down menu or last selected if 'All channels' or 'Multichannel' menu option is active
 
@@ -1427,7 +1477,7 @@ r.MIDI_InsertTextSysexEvt() -- not inserted with empty bytestr argument
 
 
 function Lane_Type_To_Event_Data(ME) -- relies on Error_Tooltip() for error message
--- further implementation see in Insert MIDI event at edit cursor.lua
+-- further implementation see in Insert or edit MIDI event at edit cursor.lua
 local ME = not ME and r.MIDIEditor_GetActive()
 local last_clicked_lane = r.MIDIEditor_GetSetting_int(ME, 'last_clicked_cc_lane')
 
@@ -4781,6 +4831,47 @@ Msg(env_id, 'ENV ID')
 
 --============================================ F X ===============================================
 
+--[[
+-- Summary of FX selection functions
+
+-- applies equally to take FX functions
+
+r.TrackFX_GetFloatingWindow(tr, fx_idx) -- helps to determine if fx is open in a floating window
+
+r.TrackFX_GetOpen(tr, fx_idx)
+true:
+1. fx UI is shown in the open fx chain
+2. fx UI is shown in a floating window regardless of being shown in fx chain and of fx chain visibility
+false:
+1. fx UI is not shown both in fx chain and in a floating window while fx chain is open 
+2. fx UI is not shown in a floating window while fx chain is closed
+
+r.TrackFX_GetChainVisible(tr)
+-- DOES NOT SUPPORT INPUT and MONITORING FX CHAINS, use Get_InputMonFX_Chain_Truely_SelectedFX()
+>= 0 index of fx whose UI is shown in the open fx chain; !!!! returns index of selected fx even if it's UI is open in a floating window
+-1 the fx chain is closed
+-2 the fx chain is open but is empty
+
+r.TrackFX_SetOpen(tr, fx_idx, open)
+
+1. open is false:
+A. fx is floating - closes its floating window;
+B. fx isn't floating regardless of its UI being shown fx chain - closes the fx chain;
+2. open is true:
+A. opens the fx chain with fx UI shown if fx chain was closed;
+B. if fx chain is already open shows the fx UI in the fx chain if it wasn't shown
+
+r.TrackFX_Show(tr, fx_idx, showFlag)
+
+showFlag:
+0 - hide chain
+1 - show chain with fx UI shown
+2 - close fx floating window
+3 - open fx in a floating window
+
+]]
+
+
 function GetMonFXProps() -- get mon fx accounting for floating window, reaper.GetFocusedFX() doesn't detect mon fx in builds prior to 6.20
 
 -- r.TrackFX_GetOpen(master_tr, integer fx)
@@ -5653,6 +5744,118 @@ or tr and {r.TrackFX_GetNumParams, r.GetFXEnvelope})
 		end
 	end
 end
+
+
+
+function Get_InputMonFX_Chain_Truely_SelectedFX(tr)
+-- when fx is selected in the fx chain and its is UI floating
+-- in track main and take fx chains such fx is determined
+-- with TrackFX_GetChainVisible() but it doesn't support input and monitoring fx chains
+	if not tr or not r.ValidatePtr(tr, 'MediaTrack*') then return end
+	if tr then
+	local t = {}
+	local CountFX = r.TrackFX_GetRecCount
+	r.PreventUIRefresh(1)
+		for i = 0, CountFX(tr)-1 do -- close and store all floating windows
+		local idx = 0x1000000+i
+			if r.TrackFX_GetFloatingWindow(tr, idx) then
+			r.TrackFX_SetOpen(tr, idx, false) -- open false // close floating window
+			-- OR
+			-- r.TrackFX_Show(tr, idx, 2) -- showFlag 2 - close floating window
+			t[#t+1] = idx
+			end
+		end
+	local open_fx_idx -- get fx whose UI is open in FX chain
+		for i = 0, CountFX(tr)-1 do
+		local idx = i+0x1000000
+			if r.TrackFX_GetOpen(tr, idx) then 
+			open_fx_idx = idx break end
+		end
+	-- restore floating windows	// z-order and focused window won't be restored, the foreground will be occupied but the window of the fx selected in the fx chain if its window was floating, otherwise the windows are loaded in the fx order
+		for _, fx_idx in ipairs(t) do
+		r.TrackFX_Show(tr, fx_idx, 3) -- showFlag 3 - open in a floating window
+		end
+	r.PreventUIRefresh(-1)
+	return open_fx_idx
+	end
+end
+
+
+
+function Re_Store_FX_Windows_Visibility(t)
+-- restores positions if screenset wasn't changed
+-- doesn't restore focus and z-order
+-- to restore positions and focus use Re_Store_Windows_Props_By_Names()
+-- see implementation in Restore FX windows after screenset change.lua
+	if not t then
+	local t = {}
+		for i = -1, r.CountTracks(0)-1 do
+		local tr = r.GetTrack(0,i) or r.GetMasterTrack(0)
+		t[tr] = {trackfx = {}, takefx = {}}
+			for i = 0, r.TrackFX_GetCount(tr)-1 do
+				if r.TrackFX_GetOpen(tr, i) then -- is open in the FX chain window or a floating window
+				local len = #t[tr].trackfx+1
+				-- storing floating status and fx chain UI visibility status even if the UI is floating
+				t[tr].trackfx[len] = {idx=i, float=r.TrackFX_GetFloatingWindow(tr, i), ui=r.TrackFX_GetChainVisible(tr)==i} 
+				end
+			end
+			for i = 0, r.TrackFX_GetRecCount(tr)-1 do
+			local i = i+0x1000000
+			local open_fx_idx = Get_InputMonFX_Chain_Truely_SelectedFX(tr)
+				if r.TrackFX_GetOpen(tr, i) then -- is open in the FX chain window or a floating window
+				local len = #t[tr].trackfx+1
+				t[tr].trackfx[len] = {idx=i, float=r.TrackFX_GetFloatingWindow(tr, i), ui=open_fx_idx==i} 
+				end
+			end
+			for i = 0, r.GetTrackNumMediaItems(tr)-1 do
+			local itm = r.GetTrackMediaItem(tr,i)
+			t[tr].takefx[itm] = {}
+				for i = 0, r.CountTakes(itm)-1 do
+				local take = r.GetTake(itm, i)
+				t[tr].takefx[itm][take] = {}				
+					for i = 0, r.TakeFX_GetCount(take)-1 do					
+						if r.TakeFX_GetOpen(take, i) then -- is open in the FX chain window or a floating window
+						local len = #t[tr].takefx[itm][take]+1
+						t[tr].takefx[itm][take][len] = {idx=i, float=r.TakeFX_GetFloatingWindow(take, i), ui=r.TakeFX_GetChainVisible(take)==i}						
+						end
+					end				
+				end
+			end
+		end
+	return t
+	elseif t then
+		for tr in pairs(t) do
+	--[[script specific
+		local mixer_vis = r.GetToggleCommandStateEx(0, 40078) == 1 -- View: Toggle mixer visible
+		local master_vis_flag = r.GetMasterTrackVisibility()
+		local master_vis_TCP, master_vis_MCP = master_vis_flag&1 == 1, master_vis_flag&2 == 2
+		local is_master_tr = tr == r.GetMasterTrack(0)
+	--]]
+			if r.ValidatePtr(tr, 'MediaTrack*')
+			--[[ script specific
+			and (not mixer_vis and (is_master_tr and master_vis_TCP or r.IsTrackVisible(tr, false)) -- mixer false // visible in the TCP // IsTrackVisible DOESN'T APPLY TO MASTER TRACK, always returns true
+			or mixer_vis and (is_master_tr and master_vis_MCP or r.IsTrackVisible(tr, true)) ) -- mixer true // visible in the MCP // IsTrackVisible DOESN'T APPLY TO MASTER TRACK, always returns true
+			or IGNORE_VISIBILITY
+			--]]
+			then
+				for _, fx_data in ipairs(t[tr].trackfx) do
+					if fx_data.ui then r.TrackFX_Show(tr, fx_data.idx, 1) end -- showFlag 1 (open FX chain with fx ui shown) // OR r.TrackFX_SetOpen(tr, fx_idx, true) -- open true
+					if fx_data.float then r.TrackFX_Show(tr, fx_data.idx, 3) end -- showFlag 3 (open in a floating window)				
+				end
+				for itm, takes_t in pairs(t[tr].takefx) do
+					for take, fx_t in pairs(takes_t) do
+						for _, fx_data in ipairs(fx_t) do
+							if fx_data.ui then r.TakeFX_Show(take, fx_data.idx, 1) end -- showFlag 1 (open FX chain with fx ui shown) // OR r.TakeFX_SetOpen(take, fx_data.idx, true) -- open true
+							if fx_data.float then r.TakeFX_Show(take, fx_data.idx, 3) end -- showFlag 3 (open in a floating window)
+						end
+					end
+				end
+			end
+		end	
+end
+
+end
+
 
 
 --================================================  F X  E N D  ==============================================
@@ -7377,9 +7580,9 @@ end
 
 
 
---====================== M A R K E R S  &  R E G I O N S  E N D =========================
+--========================== M A R K E R S  &  R E G I O N S  E N D =========================
 
---=========================  G F X  =========================
+--=======================================  G F X  ===========================================
 
 function GFX_SETFONT_FLAGS(flags)
 -- function to calculate multibyte character for gfx.setfont() flags argument
@@ -7532,7 +7735,405 @@ function Get_Store_GFX_Wnd_Coordinates(bool) -- run to get without the arg, then
 	end
 end
 
---====================== G F X  E N D =========================
+--==================================== G F X  E N D ==================================
+
+--==================================== W I N D O W S =================================
+
+function Loka_Window_At_Mouse(w, h) -- Lokasenna // https://forum.cockos.com/showpost.php?p=1689028&postcount=15
+-- This will open a window centered on the mouse cursor, adjusted to make sure it's all on the screen and clear of the taskbar
+local mouse_x, mouse_y = reaper.GetMousePosition()
+local x, y = mouse_x - (w / 2), mouse_y - (h / 2)
+local l, t, r, b = x, y, x + w, y + h
+local __, __, screen_w, screen_h = reaper.my_getViewport(l, t, r, b, l, t, r, b, 1) -- https://forum.cockos.com/showthread.php?t=195629#4
+
+	if l < 0 then x = 0 end
+	if r > screen_w then x = (screen_w - w - 16) end
+	if t < 0 then y = 0 end
+	if b > screen_h then y = (screen_h - h - 40) end
+
+gfx.init("My window", w, h, 0, x, y)
+
+end
+
+
+function Loka_Window_At_Center(w, h) -- Lokasenna // https://forum.cockos.com/showpost.php?p=1689028&postcount=15
+-- if you just want a window centered on the screen
+local l, t, r, b = 0, 0, w, h
+local __, __, screen_w, screen_h = reaper.my_getViewport(l, t, r, b, l, t, r, b, 1)
+local x, y = (screen_w - w) / 2, (screen_h - h) / 2
+
+gfx.init("My window", w, h, 0, x, y)
+
+end
+
+
+
+-- https://forum.cockos.com/showthread.php?t=257766 SWS windows state // may apply to native as well in the reaper-screensets.ini
+--[[
+input = '6B010000F900000039040000030200000000000000000000A7'
+data = input:gsub('%x%x', function(byte) return string.char(tonumber(byte, 16)) end)
+left, top, right, bottom, state, whichdock = string.unpack('<iiiiII', data)
+]]
+function SWS_wnd_open(input)
+local data = input:gsub('%x%x', function(byte) return string.char(tonumber(byte, 16)) end)
+return ({string.unpack('<iiiiII', data)})[5] == '1'
+end
+
+
+
+local wnd_ident_t = { -- to be used in Get_Mixer_Wnd_Dock_State() function
+-- transport docked pos in the top or bottom dockers can't be ascertained
+-- transport_dock=0 any time it's not docked at its reserved positions, which could be
+-- floating or docked in any other docker
+-- window 'dock=0' keys do not get updated if the window was undocked before a screenset where it's docked was (re)loaded which leads to false positives
+-- The following key names are keys used in [REAPERdockpref] section
+-- % escapes are included for use within string.match()
+actions = {'%[actions%]', 'wnd_vis', 'dock'}, -- Show action list ('Actions')
+--=============== 'Project Bay' // 8 actions // dosn't keep size ===============
+projbay_0 = {'%[projbay_0%]', 'wnd_vis', 'dock'}, -- View: Show project bay window
+projbay_1 = {'%[projbay_1%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 2
+projbay_2 = {'%[projbay_2%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 3
+projbay_3 = {'%[projbay_3%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 4
+projbay_4 = {'%[projbay_4%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 5
+projbay_5 = {'%[projbay_5%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 6
+projbay_6 = {'%[projbay_6%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 7
+projbay_7 = {'%[projbay_7%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 8
+--============================== Matrices ======================================
+routing = {'routingwnd_vis', 'routing_dock'}, -- View: Show track grouping matrix window ('Grouping Matrix'); View: Show routing matrix window ('Routing Matrix'); View: Show track wiring diagram ('Track Wiring Diagram')
+--===========================================================================
+regmgr = {'%[regmgr%]', 'wnd_vis', 'dock'}, -- View: Show region/marker manager window ('Region/Marker Manager')
+explorer = {'%[reaper_explorer%]', 'visible', 'docked'}, -- Media explorer: Show/hide media explorer ('Media Explorer')
+trackmgr = {'%[trackmgr%]', 'wnd_vis', 'dock'}, -- View: Show track manager window ('Track Manager')
+bigclock = {'%[bigclock%]', 'wnd_vis', 'dock'}, -- View: Show big clock window ('Big Clock')
+video = {'%[reaper_video%]', 'visible', 'docked'}, -- Video: Show/hide video window ('Video Window')
+perf = {'%[perf%]', 'wnd_vis', 'dock'}, -- View: Show performance meter window ('Performance Meter')
+navigator = {'%[navigator%]', 'wnd_vis', 'dock'}, -- View: Show navigator window ('Navigator')
+vkb = {'%[vkb%]', 'wnd_vis', 'dock'}, -- View: Show virtual MIDI keyboard ('Virtual MIDI Keyboard')
+fadeedit = {'%[fadeedit%]', 'wnd_vis', 'dock'}, -- View: Show crossfade editor window ('Crossfade Editor')
+undo = {'undownd_vis', 'undownd_dock'}, -- View: Show undo history window ('Undo History')
+fxbrowser = {40271, 'fxadd_dock'}, -- View: Show FX browser window ('Add FX to Track #' or 'Add FX to: Item' or 'Browse FX') // fxadd_vis value doesn't change hence action to check visibility
+itemprops = {'%[itemprops%]', 'wnd_vis', 'dock'}, -- Item properties: Toggle show media item/take properties ('Media Item Properties')
+midiedit = {'%[midiedit%]', 'dock'}, -- there's no key for MIDI Editor visibility
+--=========== TOOLBARS // don't keep size; the ident strings are provisional ==========
+toolbar = {'toolbar', 'wnd_vis', 'dock'} -- Toolbar: Open/close toolbar X ('Toolbar X')
+}
+
+
+function Get_Mixer_Wnd_Dock_State(wnd_ident_t, wantDockPos) -- get Mixer dock state WHEN the SWS extension IS NOT INSTALLED to verify whether there're other windows sharing a docker with the Mixer in the split mode and so whether its full window width can be used; returns false if there's a window which shares a docker with the Mixer, otherwise true
+
+-- dockermode of closed docked windows isn't updated, so when the Mixer doesn't share docker with any other windows
+-- in the split mode at a given moment because these windows are closed, to ensure that its full width, obtained with
+-- my_getViewport(), can be used, these closed windows visibility toggle state must be evaluated as well
+-- a more reliable method would be to read screenset data
+
+local f = io.open(r.get_ini_file(),'r')
+local cont = f:read('*a')
+f:close()
+local mixwnd_dock = r.GetToggleCommandStateEx(0, 40083) == 1 -- or cont:match('mixwnd_dock=1') -- Mixer: Toggle docking in docker // mixwnd_dock value is likely to not update when state changes hence alternative
+local mixer_dockermode = cont:match('%[REAPERdockpref%].-%f[%a]mixer=[%d%.]-%s(%d+)\n') -- find mixer dockermode number // the frontier operator %f is needed to avoid false positive of 'mastermixer' which refers to the Master track
+local mixer_dock_pos = cont:match('dockermode'..mixer_dockermode..'=(%d+)') -- get mixer docker position
+
+	if wantDockPos then return mixer_dock_pos end -- if requested, return pos in case the entire docker is closed and not the Mixer window itself, to condition the rightmost position routine because in this case it won't work, but nevertheless will run because Mixer toggle state will still be OFF and hence true; plus if dockerpos is not 0 or 2 the rightmost position won't be needed anyway as without SWS extension in other docks and in floating window only the leftmost pos is honored; must come before the next condition so it's not blocked by it if the latter is true
+	if not mixwnd_dock -- in floating Mixer window wihtout SWS extension only use leftmost position
+	or (mixer_dock_pos ~= '0' and mixer_dock_pos ~= '2') -- if sits in side dockers, only use leftmost position because the Mixer window cannot have full width anyway
+	then return false
+	elseif mixwnd_dock and mixer_dockermode and (mixer_dock_pos == '0' or mixer_dock_pos == '2') -- bottom or top, where Mixer window can stretch to the full width of the main window
+	then
+	local temp = cont -- temp var to perform repeats count below without risking to affect the orig. data
+	local _, reps = temp:gsub('dockermode','%0') -- get number of repeats
+	local dockermode_t = {cont:match(string.rep('.-(dockermode%d+=%d)', reps))} -- collect all dockermode entries
+	local adjacent_dockermode_t = {}
+		for _, v in ipairs(dockermode_t) do -- collect dockermode indices of all windows which share the docker with the Mixer in the split mode
+			if v:match('(%d+)=') ~= mixer_dockermode -- exclude mixer's own dockermode entry
+			and v:match('=(%d)') == mixer_dock_pos then -- if positon is the same as that of Mixer which means the docker is split and causes change in Mixer window size
+			adjacent_dockermode_t[#adjacent_dockermode_t+1] = v:match('(%d+)=')
+			end
+		end
+		if #adjacent_dockermode_t > 0 then -- if there're dockermodes which share docker with the Mixer
+		local REAPERdockpref = cont:match('%[REAPERdockpref%](.-)%[')
+		local REAPERdockpref_t = {}
+			for line in REAPERdockpref:gmatch('\n?(.-%s%d+)\n?') do -- extract all [REAPERdockpref] section entries
+			REAPERdockpref_t[#REAPERdockpref_t+1] = line
+			end
+		local adjacent_wnd_t = {}
+			for _, v1 in ipairs(adjacent_dockermode_t) do -- collect names of windows sitting in a split docker with the Mixer (having dockermode with the same position as that of the Mixer) whether visible or not
+				for _, v2 in ipairs(REAPERdockpref_t) do
+					if v1 == v2:match('.+%s(%d+)') then
+					adjacent_wnd_t[#adjacent_wnd_t+1] = v2:match('(.+)=') end
+				end
+			end
+			for _, v in ipairs(adjacent_wnd_t) do -- evaluate the collected windows visibility and dock state
+			local t = wnd_ident_t[v] or wnd_ident_t[v:match('toolbar')] -- toolbar key is separate since in adjacent_wnd_t toolbar keys contain numbers and can't select the table nested inside wnd_ident_t directly; match to isolate 'toolbar' word specifically since the list may include SWS window identifiers
+				if t and #t == 3 and t[1] ~= 'toolbar' then -- or if v ~= 'toolbar'; windows with a dedicated section in reaper.ini besides toolbars which are treated below // additional t truthfulness evaluation because if the adjacent_wnd_t list contains SWS window identifiers the t will be false
+				local sect = cont:match(t[1]..'(.-)%[') or cont:match(t[1]..'(.-)$') -- capture section content either followed by another section or at the very end of the file
+					if sect:match(t[2]..'=1') and sect:match(t[3]..'=1') then return false end
+				elseif t and #t == 2 and tonumber(t[1]) then -- fxbrowser command ID and a key
+					if r.GetToggleCommandStateEx(0, t[1]) == 1 and cont:match(t[2]..'=1') then return false end
+				elseif t and #t == 2 and v == 'midiedit' then -- MIDI Editor, always returns false if docked in the same docker as the Mixer regardless of visibility because the latter cannot be ascertained from reaper.ini
+					local sect = cont:match(t[1]..'(.-)%[') or cont:match(t[1]..'(.-)$') -- capture section content either followed by another section or at the very end of the file
+						if sect:match(t[2]..'=1') then return false end
+				elseif t and #t == 2 then -- windows without a dedicated section
+					if cont:match(t[1]..'=1') and cont:match(t[2]..'=1') then
+					return false end
+				elseif t and t[1] == 'toolbar' then -- or if v == 'toolbar'
+				local sect = cont:match('%['..v..'%](.-)%[') or cont:match('%['..v..'%](.-)$') -- capture section content either followed by another section or at the very end of the file
+					if sect and sect:match(t[2]..'=1') and sect:match(t[3]..'=1') then return false end -- sect can be false if the stored toolbar has no section, in particular 'toolbar' (without a number) representing Arrange main toolbar
+				end
+			end
+		end
+	end
+
+return true
+
+end
+
+
+
+function GetTCP_Width(content) -- LIKELY OBSOLETE DUE TO THE NEXT FUNCTION
+
+local left_docker_on
+-- find dockermode(s) keys assigned position value 1 - left
+	for mode in content:gmatch('dockermode(%d*)=1') do
+		if mode then
+		-- find if windows/toobars keys assigned the found dockermode in the [REAPERdockpref] section
+		local REAPERdockpref = content:match('REAPERdockpref%](.-)\n%[') -- isolate this section contents
+			for str in REAPERdockpref:gmatch('[^\n\r]*') do
+--Msg(str:match('.-=[%-%.%d]*%s'..v..'$'))
+			local key = str:match('.-=[%-%.%d]*%s'..mode..'$') and str:match('^(.-)=')
+			-- determine if windows/toolbars found in the [REAPERdockpref] section are docked and visible in the lefthand docker
+			local sect = key and content:match('(%['..key..'%].-)%[') or (key and content:match('(%['..key..'%].-)$'))
+				if sect then -- keys which have a dedicated section
+				vis, dock = sect:match('wnd_vis=(%d)') or sect:match('visible=(%d)'), sect:match('dock=(%d)') or sect:match('docked=(%d)')
+				else -- keys without a dedicated section, not exhaustive
+					if key == 'fxbrowser' then vis, dock = content:match('fxadd_vis=(%d)'), content:match('fxadd_dock=(%d)')
+					elseif key == 'mixer' then vis, dock = content:match('mixwnd_vis=(%d)'), content:match('mixwnd_dock=(%d)')
+					elseif key == 'transport' then vis, dock = content:match(key..'_vis=(%d)'), content:match(key..'_dock=(%d)')
+					end
+				end
+				if vis == '1' and vis == dock then left_docker_on = true break end
+			end
+		end
+		if left_docker_on == true then break end
+	end
+
+--Msg('DOCKER = '..tostring(left_docker_on))
+
+local TCP_width = content:match('leftpanewid=(.-)\n')
+local dockheight_l = content:match('dockheight_l=(.-)\n') -- if left docker is open  https://forums.cockos.com/showpost.php?p=1991096&postcount=11
+
+-- https://forum.cockos.com/showpost.php?p=2303259&postcount=4 thanks to IXix
+-- https://forum.cockos.com/showthread.php?t=238128
+
+	if left_docker_on then TCP_width = TCP_width + dockheight_l end -- shifted righwards TCP right edge
+
+--Msg(dockheight_l)
+--Msg(TCP_width)
+
+return TCP_width
+
+end
+
+
+function Re_Store_Windows_Props_By_Names1(names_t, t) -- relies on Esc() function
+-- works if screenset was changed because in this case window nandles will change as well while names won't
+-- doesn't support docked windows since they're not top level and won't be detected by JS_Window_ArrayAllTop()
+-- https://forums.cockos.com/showthread.php?p=2538915
+-- https://forum.cockos.com/showthread.php?t=249817
+	if not t then
+	local main_HWND = r.GetMainHwnd()
+	local array = r.new_array({}, 1023)
+	r.JS_Window_ArrayAllTop(array) -- docked windows are not top level hence won't be listed
+	local array = array.table()
+	local t = {}
+		for k, address in ipairs(array) do -- duplicate names with different hwnd may occur, such as FX chain windows, so the number of windows which satisfy the search may be greater than the number of visible windows
+		local hwnd = r.JS_Window_HandleFromAddress(address)
+		local title = r.JS_Window_GetTitle(hwnd)
+			for _, name in pairs(names_t) do
+				if title:match(Esc(name)) and r.JS_Window_IsVisible(hwnd) -- FX chain windows may happen to be visible even when closed, there're no fx and the object is hidden in Arrange, fx floating window are only visible when floating
+				then
+				local retval, lt, tp, rt, bt = r.JS_Window_GetRect(hwnd)
+				local w, h = rt-lt, r.GetOS():match('OSX') and tp-bt or bt-tp -- isn't necessary if r.JS_Window_Move() is used for restoration rather than r.JS_Window_SetPosition()
+				t[#t+1] = {tit=title, lt=lt, tp=tp, w=w, h=h, foregrnd=r.JS_Window_GetForeground()==hwnd}
+				end
+			end
+		end
+	return t
+	else
+		for _, wnd in ipairs(t) do
+		local hwnd = r.JS_Window_Find(wnd.tit, true) -- exact true
+		local dock_idx, isFloatingDocker = r.DockIsChildOfDock(hwnd)
+			if dock_idx == -1 then -- not docked to prevent undocking window in which case it'll become invisible
+			r.JS_Window_Move(hwnd, wnd.lt, wnd.tp)
+		--  OR	
+		--	r.JS_Window_SetPosition(hwnd, wnd.lt, wnd.tp, wnd.w, wnd.h) -- ZOrder, flags are ommitted
+				--	if wnd.focus then r.JS_Window_SetFocus(hwnd) end -- focus is not stored above but it's more granular and targets elements in the foreground window which isn't really necessary
+				if wnd.foregrnd then r.JS_Window_SetForeground(hwnd) end -- only restored if the script is run via a shortcut because clicking changes foreground window, r.JS_Window_SetZOrder() should be avoided as it's global to the OS
+			end
+		end
+	end
+end
+
+
+function Re_Store_Windows_Props_By_Names2(names_t, t)
+-- works if screenset was changed because in this case window nandles will change as well while names won't
+-- supports docked windows
+-- https://forums.cockos.com/showthread.php?p=2538915
+-- https://forum.cockos.com/showthread.php?t=249817
+	if not t then
+	local main_HWND = r.GetMainHwnd()
+--	local name_t = {'FX:','- Track','- Item'}
+	local t = {}
+	for k, name in pairs(names_t) do
+	local array = r.new_array({}, 1023)
+	r.JS_Window_ArrayFind(name, false, array) -- exact false
+	local array = array.table()
+		for k, address in ipairs(array) do -- duplicate names with different hwnd may occur, such as FX chain windows, so the number of windows which satisfy the search may be greater than the number of visible windows
+		local hwnd = r.JS_Window_HandleFromAddress(address)
+			if r.JS_Window_IsVisible(hwnd) -- FX chain windows may happen to be visible even when closed, there're no fx and the object is hidden in Arrange, fx floating window are only visible when floating
+			local title = r.JS_Window_GetTitle(hwnd)
+			local retval, lt, tp, rt, bt = r.JS_Window_GetRect(hwnd)
+			local w, h = rt-lt, r.GetOS():match('OSX') and tp-bt or bt-tp -- isn't necessary if r.JS_Window_Move() is used for restoration rather than r.JS_Window_SetPosition()
+			t[#t+1] = {tit=title, lt=lt, tp=tp, w=w, h=h, focus=r.JS_Window_GetForeground()==hwnd}
+			end
+		end
+	end
+	return t
+	else
+		for _, wnd in ipairs(t) do
+		local hwnd = r.JS_Window_Find(wnd.tit, true) -- exact true
+		local dock_idx, isFloatingDocker = r.DockIsChildOfDock(hwnd)
+			if dock_idx == -1 then -- not docked to prevent undocking window in which case it'll become invisible
+			r.JS_Window_Move(hwnd, wnd.lt, wnd.tp)
+		--  OR	
+		--	r.JS_Window_SetPosition(hwnd, wnd.lt, wnd.tp, wnd.w, wnd.h) -- ZOrder, flags are omitted
+				--	if wnd.focus then r.JS_Window_SetFocus(hwnd) end -- focus is not stored above but it's more granular and targets elements in the foreground window which isn't really necessary
+				if wnd.foregrnd then r.JS_Window_SetForeground(hwnd) end -- only restored if the script is run via a shortcut because clicking changes foreground window, r.JS_Window_SetZOrder() should be avoided as it's global to the OS
+			end
+		end
+	end
+end
+
+
+function Re_Store_Windows_Props_By_Names_And_Handles1(names_t, t) -- relies on Esc() function
+-- store by names, restore by handles
+-- works if screenset was NOT changed because in this case window handles won't change and can be used to restore windows
+-- doesn't support docked windows since they're not top level and won't be detected by JS_Window_ArrayAllTop()
+-- https://forums.cockos.com/showthread.php?p=2538915
+-- https://forum.cockos.com/showthread.php?t=249817
+	if not t then
+	local main_HWND = r.GetMainHwnd()
+	local array = r.new_array({}, 1023)
+	r.JS_Window_ArrayAllTop(array) -- docked windows are not top level hence won't be listed
+	local array = array.table()
+	local t = {}
+		for k, address in ipairs(array) do -- duplicate names with different hwnd may occur, such as FX chain windows, so the number of windows which satisfy the search may be greater than the number of visible windows
+		local hwnd = r.JS_Window_HandleFromAddress(address)
+		local title = r.JS_Window_GetTitle(hwnd)
+			for _, name in pairs(names_t) do
+				if title:match(Esc(name)) and r.JS_Window_IsVisible(hwnd) -- FX chain windows may happen to be visible even when closed, there're no fx and the object is hidden in Arrange, fx floating window are only visible when floating
+				then
+				local retval, lt, tp, rt, bt = r.JS_Window_GetRect(hwnd)
+				local w, h = rt-lt, r.GetOS():match('OSX') and tp-bt or bt-tp -- isn't necessary if r.JS_Window_Move() is used for restoration rather than r.JS_Window_SetPosition()
+				t[#t+1] = {id=hwnd, lt=lt, tp=tp, w=w, h=h, foregrnd=r.JS_Window_GetForeground()==hwnd}
+				end
+			end
+		end
+	return t
+	else
+		for _, wnd in ipairs(t) do
+		local dock_idx, isFloatingDocker = r.DockIsChildOfDock(wnd.id)
+			if dock_idx == -1 then -- not docked to prevent undocking window in which case it'll become invisible
+			r.JS_Window_Move(wnd.id, wnd.lt, wnd.tp)
+		--  OR
+		--	r.JS_Window_SetPosition(wnd.id, wnd.lt, wnd.tp, wnd.w, wnd.h) -- ZOrder, flags are ommitted
+				--	if wnd.focus then r.JS_Window_SetFocus(hwnd) end -- focus is not stored above but it's more granular and targets elements in the foreground window which isn't really necessary
+				if wnd.foregrnd then r.JS_Window_SetForeground(hwnd) end -- only restored if the script is run via a shortcut because clicking changes foreground window, r.JS_Window_SetZOrder() should be avoided as it's global to the OS
+			end
+		end
+	end
+end
+
+
+function Re_Store_Windows_Props_By_Names_And_Handles2(names_t, t)
+-- store by names, restore by handles
+-- works if screenset was NOT changed because in this case window handles won't change and can be used to restore windows
+-- supports docked windows
+-- https://forums.cockos.com/showthread.php?p=2538915
+-- https://forum.cockos.com/showthread.php?t=249817
+	if not t then
+	local main_HWND = r.GetMainHwnd()
+--	local name_t = {'FX:','- Track','- Item'}
+	local t = {}
+	for k, name in pairs(names_t) do
+	local array = r.new_array({}, 1023)
+	r.JS_Window_ArrayFind(name, false, array) -- exact false
+	local array = array.table()
+		for k, address in ipairs(array) do -- duplicate names with different hwnd may occur, such as FX chain windows, so the number of windows which satisfy the search may be greater than the number of visible windows
+		local hwnd = r.JS_Window_HandleFromAddress(address)
+			if r.JS_Window_IsVisible(hwnd) -- FX chain windows may happen to be visible even when closed, there're no fx and the object is hidden in Arrange, fx floating window are only visible when floating
+			local retval, lt, tp, rt, bt = r.JS_Window_GetRect(hwnd)
+			local w, h = rt-lt, r.GetOS():match('OSX') and tp-bt or bt-tp -- isn't necessary if r.JS_Window_Move() is used for restoration rather than r.JS_Window_SetPosition()
+			t[#t+1] = {id=hwnd, lt=lt, tp=tp, w=w, h=h, foregrnd=r.JS_Window_GetForeground()==hwnd}
+			end
+		end
+	end
+	return t
+	else
+		for _, wnd in ipairs(t) do
+		local dock_idx, isFloatingDocker = r.DockIsChildOfDock(wnd.id)
+			if dock_idx == -1 then -- not docked to prevent undocking window in which case it'll become invisible
+			r.JS_Window_Move(wnd.id, wnd.lt, wnd.tp)
+		--  OR
+		--	r.JS_Window_SetPosition(wnd.id, wnd.lt, wnd.tp, wnd.w, wnd.h) -- ZOrder, flags are omitted
+				--	if wnd.focus then r.JS_Window_SetFocus(hwnd) end -- focus is not stored above but it's more granular and targets elements in the foreground window which isn't really necessary
+				if wnd.foregrnd then r.JS_Window_SetForeground(hwnd) end -- only restored if the script is run via a shortcut because clicking changes foreground window, r.JS_Window_SetZOrder() should be avoided as it's global to the OS
+			end
+		end
+	end
+end
+
+
+function Window_Is_Visible(hwnd)
+-- takes advantage of the fact that the following functions don't affect invisible windows
+-- docked windows will be considered invisible because focus and foreground status can't be applied to them, they're children windows
+-- r.JS_Window_IsVisible() isn't suitable since it may return true for invisible (closed) windows as well, such as FX chain;
+-- may not be sutable when many windows are open because it changes foreground window or focus
+-- OK if windows will get closed anyway
+-- r.JS_Window_GetForeground() is safer when the window is surely closed because it doesn't remove focus from children of the currently focused window, e.g. list entry active status
+--[-[
+local ForeGrnd = r.JS_Window_GetForeground
+local foregrnd = ForeGrnd() 
+	if foregrnd == hwnd then return true end
+r.JS_Window_SetForeground(hwnd)
+local foregrnd = ForeGrnd()
+return foregrnd == hwnd
+--]]
+--[[ OR
+Msg(r.JS_Window_GetTitle(hwnd))
+local Focus = r.JS_Window_GetFocus
+local focus = Focus()
+	if focus == hwnd then return true end
+r.JS_Window_SetFocus(hwnd)
+local focus = Focus()
+return focus == hwnd
+--]]
+end
+
+
+function Exclude_Visible_Windows(t) -- t stems from Re_Store_Windows_Props_By_Names[_And_Handles]() functions
+	for i=#t,1,-1 do
+	local wnd = t[i]
+	local hwnd = r.JS_Window_Find(wnd.tit, true) -- exact true
+		if Window_Is_Visible(hwnd) then
+		table.remove(t,i)
+		end
+	end
+end
+
+
+
+--==================================== W I N D O W S   E N D ====================================
+
 
 function timed_tooltip(tooltip, x, y, time) -- local x, y = r.GetMousePosition()
 -- sticks for the duration of time in sec if the script is run from a floating toolbar button
@@ -8392,201 +8993,6 @@ local f = io.open(res_path..'reaper-kb.ini', 'r')
 	end
 end
 
-
-
-function Loka_Window_At_Mouse(w, h) -- Lokasenna // https://forum.cockos.com/showpost.php?p=1689028&postcount=15
--- This will open a window centered on the mouse cursor, adjusted to make sure it's all on the screen and clear of the taskbar
-local mouse_x, mouse_y = reaper.GetMousePosition()
-local x, y = mouse_x - (w / 2), mouse_y - (h / 2)
-local l, t, r, b = x, y, x + w, y + h
-local __, __, screen_w, screen_h = reaper.my_getViewport(l, t, r, b, l, t, r, b, 1) -- https://forum.cockos.com/showthread.php?t=195629#4
-
-	if l < 0 then x = 0 end
-	if r > screen_w then x = (screen_w - w - 16) end
-	if t < 0 then y = 0 end
-	if b > screen_h then y = (screen_h - h - 40) end
-
-gfx.init("My window", w, h, 0, x, y)
-
-end
-
-
-function Loka_Window_At_Center(w, h) -- Lokasenna // https://forum.cockos.com/showpost.php?p=1689028&postcount=15
--- if you just want a window centered on the screen
-local l, t, r, b = 0, 0, w, h
-local __, __, screen_w, screen_h = reaper.my_getViewport(l, t, r, b, l, t, r, b, 1)
-local x, y = (screen_w - w) / 2, (screen_h - h) / 2
-
-gfx.init("My window", w, h, 0, x, y)
-
-end
-
-
-
--- https://forum.cockos.com/showthread.php?t=257766 SWS windows state // may apply to native as well in the reaper-screensets.ini
---[[
-input = '6B010000F900000039040000030200000000000000000000A7'
-data = input:gsub('%x%x', function(byte) return string.char(tonumber(byte, 16)) end)
-left, top, right, bottom, state, whichdock = string.unpack('<iiiiII', data)
-]]
-function SWS_wnd_open(input)
-local data = input:gsub('%x%x', function(byte) return string.char(tonumber(byte, 16)) end)
-return ({string.unpack('<iiiiII', data)})[5] == '1'
-end
-
-
-
-local wnd_ident_t = { -- to be used in Get_Mixer_Wnd_Dock_State() function
--- transport docked pos in the top or bottom dockers can't be ascertained
--- transport_dock=0 any time it's not docked at its reserved positions, which could be
--- floating or docked in any other docker
--- window 'dock=0' keys do not get updated if the window was undocked before a screenset where it's docked was (re)loaded which leads to false positives
--- The following key names are keys used in [REAPERdockpref] section
--- % escapes are included for use within string.match()
-actions = {'%[actions%]', 'wnd_vis', 'dock'}, -- Show action list ('Actions')
---=============== 'Project Bay' // 8 actions // dosn't keep size ===============
-projbay_0 = {'%[projbay_0%]', 'wnd_vis', 'dock'}, -- View: Show project bay window
-projbay_1 = {'%[projbay_1%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 2
-projbay_2 = {'%[projbay_2%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 3
-projbay_3 = {'%[projbay_3%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 4
-projbay_4 = {'%[projbay_4%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 5
-projbay_5 = {'%[projbay_5%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 6
-projbay_6 = {'%[projbay_6%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 7
-projbay_7 = {'%[projbay_7%]', 'wnd_vis', 'dock'}, -- View: Show project bay window 8
---============================== Matrices ======================================
-routing = {'routingwnd_vis', 'routing_dock'}, -- View: Show track grouping matrix window ('Grouping Matrix'); View: Show routing matrix window ('Routing Matrix'); View: Show track wiring diagram ('Track Wiring Diagram')
---===========================================================================
-regmgr = {'%[regmgr%]', 'wnd_vis', 'dock'}, -- View: Show region/marker manager window ('Region/Marker Manager')
-explorer = {'%[reaper_explorer%]', 'visible', 'docked'}, -- Media explorer: Show/hide media explorer ('Media Explorer')
-trackmgr = {'%[trackmgr%]', 'wnd_vis', 'dock'}, -- View: Show track manager window ('Track Manager')
-bigclock = {'%[bigclock%]', 'wnd_vis', 'dock'}, -- View: Show big clock window ('Big Clock')
-video = {'%[reaper_video%]', 'visible', 'docked'}, -- Video: Show/hide video window ('Video Window')
-perf = {'%[perf%]', 'wnd_vis', 'dock'}, -- View: Show performance meter window ('Performance Meter')
-navigator = {'%[navigator%]', 'wnd_vis', 'dock'}, -- View: Show navigator window ('Navigator')
-vkb = {'%[vkb%]', 'wnd_vis', 'dock'}, -- View: Show virtual MIDI keyboard ('Virtual MIDI Keyboard')
-fadeedit = {'%[fadeedit%]', 'wnd_vis', 'dock'}, -- View: Show crossfade editor window ('Crossfade Editor')
-undo = {'undownd_vis', 'undownd_dock'}, -- View: Show undo history window ('Undo History')
-fxbrowser = {40271, 'fxadd_dock'}, -- View: Show FX browser window ('Add FX to Track #' or 'Add FX to: Item' or 'Browse FX') // fxadd_vis value doesn't change hence action to check visibility
-itemprops = {'%[itemprops%]', 'wnd_vis', 'dock'}, -- Item properties: Toggle show media item/take properties ('Media Item Properties')
-midiedit = {'%[midiedit%]', 'dock'}, -- there's no key for MIDI Editor visibility
---=========== TOOLBARS // don't keep size; the ident strings are provisional ==========
-toolbar = {'toolbar', 'wnd_vis', 'dock'} -- Toolbar: Open/close toolbar X ('Toolbar X')
-}
-
-
-function Get_Mixer_Wnd_Dock_State(wnd_ident_t, wantDockPos) -- get Mixer dock state WHEN the SWS extension IS NOT INSTALLED to verify whether there're other windows sharing a docker with the Mixer in the split mode and so whether its full window width can be used; returns false if there's a window which shares a docker with the Mixer, otherwise true
-
--- dockermode of closed docked windows isn't updated, so when the Mixer doesn't share docker with any other windows
--- in the split mode at a given moment because these windows are closed, to ensure that its full width, obtained with
--- my_getViewport(), can be used, these closed windows visibility toggle state must be evaluated as well
--- a more reliable method would be to read screenset data
-
-local f = io.open(r.get_ini_file(),'r')
-local cont = f:read('*a')
-f:close()
-local mixwnd_dock = r.GetToggleCommandStateEx(0, 40083) == 1 -- or cont:match('mixwnd_dock=1') -- Mixer: Toggle docking in docker // mixwnd_dock value is likely to not update when state changes hence alternative
-local mixer_dockermode = cont:match('%[REAPERdockpref%].-%f[%a]mixer=[%d%.]-%s(%d+)\n') -- find mixer dockermode number // the frontier operator %f is needed to avoid false positive of 'mastermixer' which refers to the Master track
-local mixer_dock_pos = cont:match('dockermode'..mixer_dockermode..'=(%d+)') -- get mixer docker position
-
-	if wantDockPos then return mixer_dock_pos end -- if requested, return pos in case the entire docker is closed and not the Mixer window itself, to condition the rightmost position routine because in this case it won't work, but nevertheless will run because Mixer toggle state will still be OFF and hence true; plus if dockerpos is not 0 or 2 the rightmost position won't be needed anyway as without SWS extension in other docks and in floating window only the leftmost pos is honored; must come before the next condition so it's not blocked by it if the latter is true
-	if not mixwnd_dock -- in floating Mixer window wihtout SWS extension only use leftmost position
-	or (mixer_dock_pos ~= '0' and mixer_dock_pos ~= '2') -- if sits in side dockers, only use leftmost position because the Mixer window cannot have full width anyway
-	then return false
-	elseif mixwnd_dock and mixer_dockermode and (mixer_dock_pos == '0' or mixer_dock_pos == '2') -- bottom or top, where Mixer window can stretch to the full width of the main window
-	then
-	local temp = cont -- temp var to perform repeats count below without risking to affect the orig. data
-	local _, reps = temp:gsub('dockermode','%0') -- get number of repeats
-	local dockermode_t = {cont:match(string.rep('.-(dockermode%d+=%d)', reps))} -- collect all dockermode entries
-	local adjacent_dockermode_t = {}
-		for _, v in ipairs(dockermode_t) do -- collect dockermode indices of all windows which share the docker with the Mixer in the split mode
-			if v:match('(%d+)=') ~= mixer_dockermode -- exclude mixer's own dockermode entry
-			and v:match('=(%d)') == mixer_dock_pos then -- if positon is the same as that of Mixer which means the docker is split and causes change in Mixer window size
-			adjacent_dockermode_t[#adjacent_dockermode_t+1] = v:match('(%d+)=')
-			end
-		end
-		if #adjacent_dockermode_t > 0 then -- if there're dockermodes which share docker with the Mixer
-		local REAPERdockpref = cont:match('%[REAPERdockpref%](.-)%[')
-		local REAPERdockpref_t = {}
-			for line in REAPERdockpref:gmatch('\n?(.-%s%d+)\n?') do -- extract all [REAPERdockpref] section entries
-			REAPERdockpref_t[#REAPERdockpref_t+1] = line
-			end
-		local adjacent_wnd_t = {}
-			for _, v1 in ipairs(adjacent_dockermode_t) do -- collect names of windows sitting in a split docker with the Mixer (having dockermode with the same position as that of the Mixer) whether visible or not
-				for _, v2 in ipairs(REAPERdockpref_t) do
-					if v1 == v2:match('.+%s(%d+)') then
-					adjacent_wnd_t[#adjacent_wnd_t+1] = v2:match('(.+)=') end
-				end
-			end
-			for _, v in ipairs(adjacent_wnd_t) do -- evaluate the collected windows visibility and dock state
-			local t = wnd_ident_t[v] or wnd_ident_t[v:match('toolbar')] -- toolbar key is separate since in adjacent_wnd_t toolbar keys contain numbers and can't select the table nested inside wnd_ident_t directly; match to isolate 'toolbar' word specifically since the list may include SWS window identifiers
-				if t and #t == 3 and t[1] ~= 'toolbar' then -- or if v ~= 'toolbar'; windows with a dedicated section in reaper.ini besides toolbars which are treated below // additional t truthfulness evaluation because if the adjacent_wnd_t list contains SWS window identifiers the t will be false
-				local sect = cont:match(t[1]..'(.-)%[') or cont:match(t[1]..'(.-)$') -- capture section content either followed by another section or at the very end of the file
-					if sect:match(t[2]..'=1') and sect:match(t[3]..'=1') then return false end
-				elseif t and #t == 2 and tonumber(t[1]) then -- fxbrowser command ID and a key
-					if r.GetToggleCommandStateEx(0, t[1]) == 1 and cont:match(t[2]..'=1') then return false end
-				elseif t and #t == 2 and v == 'midiedit' then -- MIDI Editor, always returns false if docked in the same docker as the Mixer regardless of visibility because the latter cannot be ascertained from reaper.ini
-					local sect = cont:match(t[1]..'(.-)%[') or cont:match(t[1]..'(.-)$') -- capture section content either followed by another section or at the very end of the file
-						if sect:match(t[2]..'=1') then return false end
-				elseif t and #t == 2 then -- windows without a dedicated section
-					if cont:match(t[1]..'=1') and cont:match(t[2]..'=1') then
-					return false end
-				elseif t and t[1] == 'toolbar' then -- or if v == 'toolbar'
-				local sect = cont:match('%['..v..'%](.-)%[') or cont:match('%['..v..'%](.-)$') -- capture section content either followed by another section or at the very end of the file
-					if sect and sect:match(t[2]..'=1') and sect:match(t[3]..'=1') then return false end -- sect can be false if the stored toolbar has no section, in particular 'toolbar' (without a number) representing Arrange main toolbar
-				end
-			end
-		end
-	end
-
-return true
-
-end
-
-
-
-function GetTCP_Width(content) -- LIKELY OBSOLETE DUE TO THE NEXT FUNCTION
-
-local left_docker_on
--- find dockermode(s) keys assigned position value 1 - left
-	for mode in content:gmatch('dockermode(%d*)=1') do
-		if mode then
-		-- find if windows/toobars keys assigned the found dockermode in the [REAPERdockpref] section
-		local REAPERdockpref = content:match('REAPERdockpref%](.-)\n%[') -- isolate this section contents
-			for str in REAPERdockpref:gmatch('[^\n\r]*') do
---Msg(str:match('.-=[%-%.%d]*%s'..v..'$'))
-			local key = str:match('.-=[%-%.%d]*%s'..mode..'$') and str:match('^(.-)=')
-			-- determine if windows/toolbars found in the [REAPERdockpref] section are docked and visible in the lefthand docker
-			local sect = key and content:match('(%['..key..'%].-)%[') or (key and content:match('(%['..key..'%].-)$'))
-				if sect then -- keys which have a dedicated section
-				vis, dock = sect:match('wnd_vis=(%d)') or sect:match('visible=(%d)'), sect:match('dock=(%d)') or sect:match('docked=(%d)')
-				else -- keys without a dedicated section, not exhaustive
-					if key == 'fxbrowser' then vis, dock = content:match('fxadd_vis=(%d)'), content:match('fxadd_dock=(%d)')
-					elseif key == 'mixer' then vis, dock = content:match('mixwnd_vis=(%d)'), content:match('mixwnd_dock=(%d)')
-					elseif key == 'transport' then vis, dock = content:match(key..'_vis=(%d)'), content:match(key..'_dock=(%d)')
-					end
-				end
-				if vis == '1' and vis == dock then left_docker_on = true break end
-			end
-		end
-		if left_docker_on == true then break end
-	end
-
---Msg('DOCKER = '..tostring(left_docker_on))
-
-local TCP_width = content:match('leftpanewid=(.-)\n')
-local dockheight_l = content:match('dockheight_l=(.-)\n') -- if left docker is open  https://forums.cockos.com/showpost.php?p=1991096&postcount=11
-
--- https://forum.cockos.com/showpost.php?p=2303259&postcount=4 thanks to IXix
--- https://forum.cockos.com/showthread.php?t=238128
-
-	if left_docker_on then TCP_width = TCP_width + dockheight_l end -- shifted righwards TCP right edge
-
---Msg(dockheight_l)
---Msg(TCP_width)
-
-return TCP_width
-
-end
 
 
 function time_pos_to_pixels(posInSec) -- posInSec is an absolute value in project; without SWS extension only accurate when the program window is fully open
